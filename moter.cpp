@@ -1,5 +1,9 @@
 #include <wiringPi.h>
 #include <iostream>
+#include <sqlite3.h>
+#include <chrono>
+#include <iomanip>
+#include <sstream>
 
 using namespace std;
 
@@ -46,6 +50,60 @@ void setServoAngle(int angle) {
     pwmWrite(motor, pwmValue);
     cout << "Servo angle set to " << angle << " degrees (Calibrated: " 
          << calibratedAngle << ", PWM: " << pwmValue << ")" << endl;
+}
+
+void store_to_db(int angle) {
+    sqlite3 *db;
+    char *errMsg = 0;
+    int rc;
+
+    // 打開資料庫
+    rc = sqlite3_open("motor.db", &db);
+    if (rc) {
+        std::cerr << "Can't open database: " << sqlite3_errmsg(db) << std::endl;
+        return;
+    }
+
+    // 建立資料表（如果不存在）
+    const char *sqlCreateTable = "CREATE TABLE IF NOT EXISTS motor ("
+                                 "ID INTEGER PRIMARY KEY AUTOINCREMENT, "
+                                 "Angle INT NOT NULL, "
+                                 "Time TEXT NOT NULL);";
+    rc = sqlite3_exec(db, sqlCreateTable, 0, 0, &errMsg);
+    if (rc != SQLITE_OK) {
+        std::cerr << "SQL error: " << errMsg << std::endl;
+        sqlite3_free(errMsg);
+        sqlite3_close(db);
+        return;
+    }
+
+    // 獲取當前時間
+    auto now = std::chrono::system_clock::now();
+    std::time_t now_time = std::chrono::system_clock::to_time_t(now);
+    std::stringstream ss;
+    ss << std::put_time(std::localtime(&now_time), "%Y-%m-%d %H:%M:%S");
+    std::string currentTime = ss.str();
+
+    // 插入資料
+    const char *sqlInsert = "INSERT INTO motor (Angle, Time) VALUES (?, ?);";
+    sqlite3_stmt *stmt;
+    rc = sqlite3_prepare_v2(db, sqlInsert, -1, &stmt, 0);
+    if (rc != SQLITE_OK) {
+        std::cerr << "Failed to prepare statement: " << sqlite3_errmsg(db) << std::endl;
+        sqlite3_close(db);
+        return;
+    }
+
+    sqlite3_bind_int(stmt, 1, angle);
+    sqlite3_bind_text(stmt, 2, currentTime.c_str(), -1, SQLITE_STATIC);
+
+    rc = sqlite3_step(stmt);
+    if (rc != SQLITE_DONE) {
+        std::cerr << "Execution failed: " << sqlite3_errmsg(db) << std::endl;
+    }
+
+    sqlite3_finalize(stmt);
+    sqlite3_close(db);
 }
 
 int main(void) {
